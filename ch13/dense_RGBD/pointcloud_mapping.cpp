@@ -13,8 +13,8 @@ using namespace std;
 #include <opencv2/highgui/highgui.hpp>
 
 int main(int argc, char** argv) {
-  vector<cv::Mat> colorImgs, depthImgs;  // 彩色图和深度图
-  vector<Eigen::Isometry3d> poses;       // 相机位姿
+  vector<cv::Mat> color_images, depth_images;
+  vector<Eigen::Isometry3d> poses;  // camera poses
 
   ifstream fin("./data/pose.txt");
   if (!fin) {
@@ -23,10 +23,10 @@ int main(int argc, char** argv) {
   }
 
   for (int i = 0; i < 5; i++) {
-    boost::format fmt("./data/%s/%d.%s");  //图像文件格式
-    colorImgs.push_back(cv::imread((fmt % "color" % (i + 1) % "png").str()));
-    depthImgs.push_back(cv::imread((fmt % "depth" % (i + 1) % "pgm").str(),
-                                   -1));  // 使用-1读取原始图像
+    boost::format fmt("./data/%s/%d.%s");
+    color_images.push_back(cv::imread((fmt % "color" % (i + 1) % "png").str()));
+    depth_images.push_back(
+        cv::imread((fmt % "depth" % (i + 1) % "pgm").str(), -1));
 
     double data[7] = {0};
     for (int i = 0; i < 7; i++) {
@@ -38,27 +38,25 @@ int main(int argc, char** argv) {
     poses.push_back(T);
   }
 
-  // 计算点云并拼接
-  // 相机内参
+  // Camera intrinsics
   double cx = 325.5;
   double cy = 253.5;
   double fx = 518.0;
   double fy = 519.0;
-  double depthScale = 1000.0;
+  double depth_scale = 1000.0;
 
-  cout << "正在将图像转换为点云..." << endl;
+  cout << "Converting image to point cloud ..." << endl;
 
-  // 定义点云使用的格式：这里用的是XYZRGB
   typedef pcl::PointXYZRGB PointT;
   typedef pcl::PointCloud<PointT> PointCloud;
 
-  // 新建一个点云
-  PointCloud::Ptr pointCloud(new PointCloud);
+  // Create a new point cloud
+  PointCloud::Ptr point_cloud(new PointCloud);
   for (int i = 0; i < 5; i++) {
     PointCloud::Ptr current(new PointCloud);
     cout << "转换图像中: " << i + 1 << endl;
-    cv::Mat color = colorImgs[i];
-    cv::Mat depth = depthImgs[i];
+    cv::Mat color = color_images[i];
+    cv::Mat depth = depth_images[i];
     Eigen::Isometry3d T = poses[i];
     for (int v = 0; v < color.rows; v++)
       for (int u = 0; u < color.cols; u++) {
@@ -66,15 +64,15 @@ int main(int argc, char** argv) {
         if (d == 0) continue;     // 为0表示没有测量到
         if (d >= 7000) continue;  // 深度太大时不稳定，去掉
         Eigen::Vector3d point;
-        point[2] = double(d) / depthScale;
+        point[2] = double(d) / depth_scale;
         point[0] = (u - cx) * point[2] / fx;
         point[1] = (v - cy) * point[2] / fy;
-        Eigen::Vector3d pointWorld = T * point;
+        Eigen::Vector3d point_world = T * point;
 
         PointT p;
-        p.x = pointWorld[0];
-        p.y = pointWorld[1];
-        p.z = pointWorld[2];
+        p.x = point_world[0];
+        p.y = point_world[1];
+        p.z = point_world[2];
         p.b = color.data[v * color.step + u * color.channels()];
         p.g = color.data[v * color.step + u * color.channels() + 1];
         p.r = color.data[v * color.step + u * color.channels() + 2];
@@ -82,27 +80,28 @@ int main(int argc, char** argv) {
       }
     // depth filter and statistical removal
     PointCloud::Ptr tmp(new PointCloud);
-    pcl::StatisticalOutlierRemoval<PointT> statistical_filter;
-    statistical_filter.setMeanK(50);
-    statistical_filter.setStddevMulThresh(1.0);
-    statistical_filter.setInputCloud(current);
-    statistical_filter.filter(*tmp);
-    (*pointCloud) += *tmp;
+    pcl::StatisticalOutlierRemoval<PointT> stats_filter;
+    stats_filter.setMeanK(50);
+    stats_filter.setStddevMulThresh(1.0);
+    stats_filter.setInputCloud(current);
+    stats_filter.filter(*tmp);
+    (*point_cloud) += *tmp;
   }
 
-  pointCloud->is_dense = false;
-  cout << "点云共有" << pointCloud->size() << "个点." << endl;
+  point_cloud->is_dense = false;
+  cout << "There are " << point_cloud->size() << "points." << endl;
 
   // voxel filter
   pcl::VoxelGrid<PointT> voxel_filter;
   voxel_filter.setLeafSize(0.01, 0.01, 0.01);  // resolution
   PointCloud::Ptr tmp(new PointCloud);
-  voxel_filter.setInputCloud(pointCloud);
+  voxel_filter.setInputCloud(point_cloud);
   voxel_filter.filter(*tmp);
-  tmp->swap(*pointCloud);
+  tmp->swap(*point_cloud);
 
-  cout << "滤波之后，点云共有" << pointCloud->size() << "个点." << endl;
+  cout << "After filtering, there are " << point_cloud->size() << "points."
+       << endl;
 
-  pcl::io::savePCDFileBinary("map.pcd", *pointCloud);
+  pcl::io::savePCDFileBinary("map.pcd", *point_cloud);
   return 0;
 }
